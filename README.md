@@ -4,7 +4,7 @@ Automatically receives documents and images that clients send over WhatsApp, dow
 
 No paid APIs — classification runs entirely locally using free, open-source OCR (Tesseract).
 
-Built as an internal office automation project by **ANFI Technologies**, Tiruchirappalli.
+Built by **Aadhil Mohamed** as an internal office automation project.
 
 ---
 
@@ -164,7 +164,7 @@ This is built for local development/testing. For continuous office use, consider
 
 ## Author
 
-**Aadhil Mohamed** — ANFI Technologies, Tiruchirappalli
+**Aadhil Mohamed**
 
 ## License
 

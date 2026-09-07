@@ -1,6 +1,8 @@
-# WATI WhatsApp Document Collector
+# WATI WhatsApp Document Collector + Free AI-Style Classifier
 
-Automatically receives documents and images that clients send over WhatsApp, downloads them via the WATI API, and saves them into a structured local folder — organized by client phone number — with no manual downloading required.
+Automatically receives documents and images that clients send over WhatsApp, downloads them via the WATI API, runs local OCR to classify what type of document it is (PAN card, GST certificate, bank statement, etc.), extracts key fields, and saves everything into a structured local folder — organized by client phone number.
+
+No paid APIs — classification runs entirely locally using free, open-source OCR (Tesseract).
 
 Built as an internal office automation project by **ANFI Technologies**, Tiruchirappalli.
 
@@ -15,16 +17,21 @@ Client sends a PDF/photo on WhatsApp
    WATI fires a "Message Received" webhook
             │
             ▼
-   Flask app checks the message type (image/document/etc.)
+   Flask app downloads the file via WATI's Media API
             │
             ▼
-   Flask calls WATI's Media API (getMedia) to fetch the file
+   Local OCR (Tesseract) extracts the text from the file
             │
             ▼
-   File saved to clients/<phone_number>/documents/
+   Keyword + regex rules classify the document type and
+   pull out fields like PAN, GSTIN, dates, and amounts
+            │
+            ▼
+   File renamed with its category + a matching .json
+   metadata file saved to clients/<phone_number>/documents/
 ```
 
-Duplicate protection is built in — if WATI resends the same webhook (which happens if the server takes too long to respond), the message ID is checked against a local log so the same file is never downloaded twice.
+Duplicate protection is built in — if WATI resends the same webhook, the message ID is checked against a local log so the same file is never processed twice.
 
 ---
 
@@ -32,49 +39,47 @@ Duplicate protection is built in — if WATI resends the same webhook (which hap
 
 - Python 3.10+
 - A [WATI](https://www.wati.io/) account with API access
-- A **scoped API token** with media-read permission (see [Getting a working token](#getting-a-working-token) — the classic "API Docs" bearer token does *not* have media permissions by default)
-- A free or paid [ngrok](https://ngrok.com/) account (a static domain is strongly recommended — see below)
+- A **scoped API token** with media-read permission (the classic "API Docs" bearer token does *not* have media permissions by default — see [Getting a working token](#getting-a-working-token))
+- A free or paid [ngrok](https://ngrok.com/) account (a static domain is strongly recommended)
+- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed locally (Windows build)
+- [Poppler for Windows](https://github.com/oschwartz10612/poppler-windows/releases) (needed to convert PDF pages to images for OCR)
 
 ---
 
 ## Setup
 
-### 1. Clone and install
+### 1. Clone and install Python dependencies
 
 ```bash
 git clone https://github.com/mr-aadheera/wati-doc-collector.git
 cd wati-doc-collector
 python -m venv venv
 venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 ```
 
-### 2. Get your WATI Tenant ID and Endpoint
+### 2. Install Tesseract OCR
 
-1. Log into your WATI account.
-2. Go to **More** → **API Docs**.
-3. Your API Endpoint URL (contains your Tenant ID) and Bearer Token are shown there.
+Download and run the Windows installer from the link above. Default install location (`C:\Program Files\Tesseract-OCR`) works fine with the default config in this repo.
 
-### 3. Getting a working token
+### 3. Install Poppler
 
-The classic bearer token shown on the API Docs page can authenticate most endpoints (like contacts) but **may return 401 Unauthorized on the media download endpoint**. If that happens:
+Download the Windows release zip, extract it (e.g. to `C:\poppler`), then locate the exact folder containing `pdftoppm.exe` — the path varies slightly by release version. Update `POPPLER_PATH` at the top of `app.py` to match.
 
-1. Go to **Connector** → **API** → **Create API Token** (naming may vary slightly by plan).
-2. Generate a new scoped token, selecting permissions that include media/file access.
-3. Use this token instead of the classic one.
+### 4. Get your WATI Tenant ID and a working token
 
-### 4. Reserve a static ngrok domain (recommended)
+1. Log into WATI → **More** → **API Docs** for your Tenant ID and base bearer token.
+2. If the media download endpoint returns 401 with that token (a known limitation of the classic token), go to **Connector** → **API** → **Create API Token** and generate a scoped token with media-read permission instead.
 
-On the ngrok free plan, one static domain is included. Reserve it under **Domains** in your ngrok dashboard — this means your webhook URL never changes, even after restarting your PC.
+### 5. Reserve a static ngrok domain (recommended)
 
-### 5. Configure your secrets
+Reserve a free static domain under **Domains** in your ngrok dashboard, so your webhook URL never changes across restarts.
+
+### 6. Configure your secrets
 
 ```bash
-copy .env.example .env        # Windows
-# cp .env.example .env        # macOS/Linux
+copy .env.example .env
 ```
-
 Edit `.env`:
 ```
 WATI_TENANT_ID=your_tenant_id
@@ -83,35 +88,39 @@ NGROK_AUTH_TOKEN=your_ngrok_auth_token
 NGROK_STATIC_DOMAIN=your_static_domain.ngrok-free.dev
 ```
 
-### 6. Run the app
+### 7. Run it
 
 ```bash
 python app.py
 ```
-
-### 7. Start the tunnel (separate terminal)
-
+In a separate terminal:
 ```bash
-venv\Scripts\activate
 python run_tunnel.py
 ```
 
-This connects using your static domain, so the URL stays the same every time.
-
 ### 8. Register the webhook in WATI
 
-1. Go to **Webhooks** in the WATI dashboard.
-2. Click **Add Webhook**.
-3. URL: `https://your-static-domain.ngrok-free.dev/wati-inbound`
-4. Status: Enabled
-5. Event: **Message Received**
-6. Save.
+URL: `https://your-static-domain.ngrok-free.dev/wati-inbound`, event: **Message Received**, status: Enabled.
 
 ### 9. Test it
 
-Send a PDF or photo from WhatsApp to your WATI business number. Confirm:
-- Flask terminal shows `200`
-- The file appears under `clients/<sender_number>/documents/`
+Send a document via WhatsApp. Check `clients/<sender_number>/documents/` for the renamed file plus a `.json` file containing the detected category and extracted fields.
+
+---
+
+## How classification works
+
+This uses a simple, transparent, fully local approach instead of a paid AI API:
+
+1. **OCR**: Tesseract extracts raw text from the image or PDF.
+2. **Keyword matching**: the extracted text is checked against a list of phrases per category (e.g. "Unique Identification Authority of India" → Aadhaar Card). See `CATEGORY_RULES` in `app.py`.
+3. **Regex extraction**: PAN numbers, GSTIN numbers, dates, and amounts are pulled out using pattern matching. See `PATTERNS` in `app.py`.
+
+This works well on clean, well-lit, printed documents. Accuracy drops on blurry or angled phone photos, since OCR quality depends heavily on image clarity — no different from any OCR-based tool. The `raw_text_preview` field saved in each metadata JSON makes it easy to see exactly what OCR read, which is useful for tuning the keyword rules as more real documents come through.
+
+### Extending the categories
+
+Add more phrases to `CATEGORY_RULES` in `app.py` as you see documents that get misclassified — it's plain Python, no retraining needed.
 
 ---
 
@@ -130,8 +139,8 @@ Send a PDF or photo from WhatsApp to your WATI business number. Confirm:
 ## Security
 
 - `.env` is excluded via `.gitignore` — never commit real credentials.
-- `clients/` (downloaded client files) and `processed_message_ids.txt` are also excluded — this repo is the automation code, not a place to store real client documents or phone numbers.
-- If a token is ever accidentally exposed, rotate it immediately from the WATI dashboard or ngrok dashboard.
+- `clients/` (downloaded client files, which may include personal ID documents) and `processed_message_ids.txt` are also excluded — this repo is the automation code, not a place to store real client documents.
+- If a token is ever accidentally exposed, rotate it immediately from the WATI dashboard.
 
 ---
 
@@ -140,8 +149,9 @@ Send a PDF or photo from WhatsApp to your WATI business number. Confirm:
 This is built for local development/testing. For continuous office use, consider:
 
 - Hosting on an always-on machine (e.g. a Synology NAS via Docker) instead of a personal PC.
-- Adding retry/alerting if the media download fails after all attempts.
-- Moving processed-message tracking from a flat text file to a small SQLite database as volume grows.
+- Image preprocessing (grayscale, contrast boost, deskew) before OCR to improve accuracy on rough phone photos.
+- Moving processed-message tracking and extracted metadata from flat files into a small SQLite database as volume grows.
+- Adding a manual review step for low-confidence classifications rather than trusting them outright, since this is real client data (PAN, Aadhaar, financial documents) — misfiling matters.
 
 ---
 
@@ -149,6 +159,7 @@ This is built for local development/testing. For continuous office use, consider
 
 - Python 3 / Flask — webhook receiver
 - WATI Media API — file retrieval
+- Tesseract OCR + pdf2image — local, free document text extraction
 - ngrok — tunnel with a static domain for a permanent public URL
 
 ## Author

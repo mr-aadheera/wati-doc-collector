@@ -2,3 +2,6 @@ flask
 requests
 pyngrok
 python-dotenv
+pytesseract
+pdf2image
+pillow
